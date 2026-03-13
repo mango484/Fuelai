@@ -63,7 +63,7 @@
       : [{type:"image",source:{type:"base64",media_type:input.mediaType,data:input.base64}},{type:"text",text:imgPrompt}];
     let response, data;
     try {
-      response = await fetch("https://api.anthropic.com/v1/messages",{
+      response = await fetch("https://round-flower-d9a0.gfinck.workers.dev",{
         method:"POST",
         headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
         body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:userContent}]}),
@@ -1202,7 +1202,7 @@ ${recentMeasure&&olderMeasure&&recentMeasure.weight&&olderMeasure.weight?"- Weig
               const generateReport=async()=>{
                 setInsightLoading(true);setInsightError(null);setInsightReport(null);
                 try {
-                  const res=await fetch("https://api.anthropic.com/v1/messages",{
+                  const res=await fetch("https://round-flower-d9a0.gfinck.workers.dev",{
                     method:"POST",
                     headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
                     body:JSON.stringify({
@@ -1233,7 +1233,7 @@ ${dataContext}`}]
                   const systemMsg=`You are a friendly nutrition and fitness coach with access to the user's tracking data. Answer questions concisely and specifically based on their actual data. Data context:
 
 ${dataContext}`;
-                  const res=await fetch("https://api.anthropic.com/v1/messages",{
+                  const res=await fetch("https://round-flower-d9a0.gfinck.workers.dev",{
                     method:"POST",
                     headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
                     body:JSON.stringify({
