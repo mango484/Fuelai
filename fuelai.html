@@ -57,7 +57,7 @@
   // Claude API call via Netlify proxy
   async function callClaude(input, apiKey) {
     const textPrompt = `You are a nutrition analyst. Analyze this food and respond with ONLY a raw JSON object, no markdown, no code fences, nothing else. Shape: {"name":"string","calories":number,"protein":number,"carbs":number,"fat":number,"confidence":"high|medium|low","notes":"string"}\nFood: ${input.content}`;
-    const imgPrompt = 'Nutrition analyst: analyze the food in this image. Respond with ONLY raw JSON, no markdown, no fences. Shape: {"name":"string","calories":number,"protein":number,"carbs":number,"fat":number,"confidence":"high|medium|low","notes":"string"}';
+    const imgPrompt = `Nutrition analyst: analyze the food in this image.${input.hints?" Additional context: "+input.hints:""} Respond with ONLY raw JSON, no markdown, no fences. Shape: {"name":"string","calories":number,"protein":number,"carbs":number,"fat":number,"confidence":"high|medium|low","notes":"string"}`;
     const userContent = input.type==="text"
       ? [{type:"text",text:textPrompt}]
       : [{type:"image",source:{type:"base64",media_type:input.mediaType,data:input.base64}},{type:"text",text:imgPrompt}];
@@ -311,6 +311,7 @@
     const [loading,setLoading]=useState(false);
     const [result,setResult]=useState(null);
     const [error,setError]=useState(null);
+    const [hints,setHints]=useState("");
     const fileRef=useRef();
     const TODAY=todayKey();
 
@@ -323,7 +324,7 @@
 
     const analyze=async()=>{
       setLoading(true);setError(null);setResult(null);
-      const input=mode==="text"?{type:"text",content:text}:{type:"image",base64:imageData.base64,mediaType:imageData.mediaType};
+      const input=mode==="text"?{type:"text",content:text+(hints.trim()?" ("+hints.trim()+")":"")}:{type:"image",base64:imageData.base64,mediaType:imageData.mediaType,hints:hints.trim()};
       let lastErr;
       for(let i=1;i<=3;i++){
         try{const d=await callClaude(input,apiKey);setResult(d);setLoading(false);return;}
@@ -372,6 +373,13 @@
                     style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.65)",border:"none",borderRadius:"50%",width:30,height:30,color:"#fff",cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
                 </div>
               )}
+            {mode==="photo"&&(
+              <div style={{marginTop:10}}>
+                <label style={S.lbl}>Hints <span style={{color:"rgba(255,255,255,0.3)",fontWeight:400}}>(optional)</span></label>
+                <input style={{...S.inp,fontSize:14}} placeholder="e.g. 150g, homemade, no oil, large portion"
+                  value={hints} onChange={e=>{setHints(e.target.value);setResult(null);}} />
+              </div>
+            )}
             </div>
           )}
 
