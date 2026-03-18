@@ -187,7 +187,7 @@
         });
         imported++;
       });
-      setWorkouts(added);
+      setWorkouts([...added].sort((a,b) => b.date.localeCompare(a.date)));
       onDone(imported, skipped);
     };
     reader.readAsText(file);
