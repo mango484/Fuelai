@@ -66,7 +66,7 @@
       response = await fetch("https://round-flower-d9a0.gfinck.workers.dev",{
         method:"POST",
         headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
-        body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:1000,messages:[{role:"user",content:userContent}]}),
+        body:JSON.stringify({model:"claude-sonnet-4-6",max_tokens:1000,messages:[{role:"user",content:userContent}]}),
       });
     } catch(e) { throw new Error("Network error: "+e.message); }
     try { data = await response.json(); } catch(e) { throw new Error("Bad response (status "+response.status+")"); }
@@ -1214,7 +1214,7 @@ ${recentMeasure&&olderMeasure&&recentMeasure.weight&&olderMeasure.weight?"- Weig
                     method:"POST",
                     headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
                     body:JSON.stringify({
-                      model:"claude-sonnet-4-20250514",max_tokens:1000,
+                      model:"claude-sonnet-4-6",max_tokens:1000,
                       messages:[{role:"user",content:`You are a friendly, practical nutrition and fitness coach. Based on the following data from my tracking app, give me a concise weekly progress summary with 3-4 specific, actionable insights. Be encouraging but honest. Use plain text with short paragraphs — no markdown headers or bullet lists, just conversational prose.
 
 ${dataContext}`}]
@@ -1245,7 +1245,7 @@ ${dataContext}`;
                     method:"POST",
                     headers:{"Content-Type":"application/json","anthropic-version":"2023-06-01","x-api-key":apiKey},
                     body:JSON.stringify({
-                      model:"claude-sonnet-4-20250514",max_tokens:600,
+                      model:"claude-sonnet-4-6",max_tokens:600,
                       system:systemMsg,
                       messages:newHistory
                     })
