@@ -28,7 +28,7 @@
 <body>
 <div id="root"></div>
 <script type="text/babel">
-  const { useState, useRef, useCallback } = React;
+  const { useState, useRef, useCallback, useEffect } = React;
 
   // Storage
   function useStorage(key, fallback) {
@@ -120,6 +120,41 @@
       URL.revokeObjectURL(url);
       await new Promise(r=>setTimeout(r,500));
     }
+  }
+
+  // Google Sheets sync — same columns as the CSV backup
+  function buildSheetRows(foodLogs, workouts, measurements) {
+    const food = [["Date","Meal","Food","Calories","Protein(g)","Carbs(g)","Fat(g)"]];
+    Object.entries(foodLogs).sort(([a],[b])=>a.localeCompare(b)).forEach(([date,meals])=>{
+      MEALS.forEach(meal=>(meals[meal]||[]).forEach(f=>{
+        food.push([date,meal,f.name,Math.round(f.calories),Math.round(f.protein),Math.round(f.carbs),Math.round(f.fat)]);
+      }));
+    });
+    const wk = [["Date","Workout","Type","Muscle Group","Duration(min)","Calories Burned","Notes","Exercises"]];
+    [...workouts].sort((a,b)=>a.date.localeCompare(b.date)).forEach(w=>{
+      const ex=(w.exercises||[]).map(e=>e.name+(e.sets?" "+e.sets+"x"+e.reps:"")+(e.weight?" @"+e.weight+"lbs":"")).join("; ");
+      wk.push([w.date,w.name,w.type,w.muscleGroup,w.duration||"",w.calories||"",w.notes||"",ex]);
+    });
+    const ms = [["Date","Weight(lbs)","Waist(in)","Notes"]];
+    [...measurements].sort((a,b)=>a.date.localeCompare(b.date)).forEach(m=>{
+      ms.push([m.date,m.weight||"",m.waist||"",m.notes||""]);
+    });
+    return { food, workouts: wk, measurements: ms };
+  }
+
+  async function syncToSheets(url, token, data, force=false) {
+    // text/plain avoids a CORS preflight, which Apps Script doesn't answer
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=utf-8" },
+      body: JSON.stringify({ token, force, ...data }),
+    });
+    let out;
+    try { out = await res.json(); } catch(e) { throw new Error("Bad response (status "+res.status+") — check the web app URL and access setting"); }
+    if (!out.ok) throw new Error(out.error || "Sync failed");
+    const skipped = Object.entries(out.result||{}).filter(([,v])=>String(v).startsWith("skipped"));
+    if (skipped.length) throw new Error(skipped.map(([k,v])=>k+": "+v).join("; "));
+    return out;
   }
 
   // CSV parsing helper — handles quoted fields
@@ -654,6 +689,38 @@
     const measureImportRef=useRef();
     const showToast=(msg,ok=true)=>{setImportToast({msg,ok});setTimeout(()=>setImportToast(null),3500);}
 
+    // Google Sheets auto-sync
+    const [sheetsUrl,setSheetsUrl]=useStorage("ft_sheets_url","");
+    const [sheetsToken,setSheetsToken]=useStorage("ft_sheets_token","");
+    const [syncState,setSyncState]=useState(null); // null | "syncing" | "ok" | "error"
+    const [syncNonce,setSyncNonce]=useState(0);
+    useEffect(()=>{
+      if(!sheetsUrl||!sheetsToken) return;
+      const t=setTimeout(()=>{
+        setSyncState("syncing");
+        syncToSheets(sheetsUrl,sheetsToken,buildSheetRows(foodLogs,workouts,measurements))
+          .then(()=>setSyncState("ok"))
+          .catch(e=>{ setSyncState("error"); setImportToast({msg:"Sheets sync: "+e.message,ok:false}); setTimeout(()=>setImportToast(null),5000); });
+      }, syncNonce ? 0 : 4000);
+      return ()=>clearTimeout(t);
+    },[foodLogs,workouts,measurements,sheetsUrl,sheetsToken,syncNonce]);
+    const connectSheets=()=>{
+      const u=prompt("Paste your Apps Script web app URL (ends in /exec)",sheetsUrl||""); if(!u) return;
+      const k=prompt("Sync token (same as TOKEN in the script)",sheetsToken||""); if(!k) return;
+      setSheetsUrl(u.trim()); setSheetsToken(k.trim()); setSyncNonce(n=>n+1);
+    };
+    const onSyncButton=()=>{
+      if(!sheetsUrl||!sheetsToken) return connectSheets();
+      if(syncState==="error"){
+        const c=prompt("Last sync failed. Type R to retry, E to edit URL/token, or D to disconnect.","R");
+        if(!c) return;
+        const x=c.trim().toUpperCase();
+        if(x==="E") return connectSheets();
+        if(x==="D"){ setSheetsUrl(""); setSheetsToken(""); setSyncState(null); return; }
+      }
+      setSyncNonce(n=>n+1);
+    };
+
     if(!apiKey) return <ApiKeyScreen onSave={setApiKey} />;
 
     const TODAY=todayKey();
@@ -720,6 +787,13 @@
               <button onClick={()=>exportAllCSV(foodLogs,workouts,measurements)}
                 style={{background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.25)",borderRadius:12,color:"#60A5FA",fontSize:14,fontWeight:700,cursor:"pointer",padding:"8px 12px",lineHeight:1}}>
                 ⬇ Backup
+              </button>
+              <button onClick={onSyncButton}
+                onContextMenu={e=>{e.preventDefault(); if(sheetsUrl&&confirm("Disconnect Google Sheets sync?")){setSheetsUrl("");setSheetsToken("");setSyncState(null);}}}
+                title={sheetsUrl?"Synced to Google Sheets — tap to sync now":"Connect Google Sheets"}
+                style={{background:"rgba(52,210,123,0.12)",border:"1px solid "+(syncState==="error"?"rgba(248,113,113,0.4)":"rgba(52,210,123,0.25)"),borderRadius:12,
+                  color:syncState==="error"?"#F87171":"#34D27B",fontSize:14,fontWeight:700,cursor:"pointer",padding:"8px 12px",lineHeight:1}}>
+                {!sheetsUrl?"☁ Sheets":syncState==="syncing"?"☁ …":syncState==="error"?"☁ !":"☁ ✓"}
               </button>
               <button onClick={()=>setShowGoalsModal(true)} style={{background:"rgba(52,210,123,0.12)",border:"1px solid rgba(52,210,123,0.25)",borderRadius:12,color:"#34D27B",fontSize:18,cursor:"pointer",padding:"8px 10px",lineHeight:1}}>⚙️</button>
             </div>
