@@ -11,7 +11,6 @@
   <link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%23080C10'/%3E%3Ctext y='.9em' font-size='72' x='12'%3E%E2%9A%A1%3C/text%3E%3C/svg%3E" />
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
   <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
     html, body { height: 100%; background: #080C10; color: #fff; }
@@ -27,8 +26,8 @@
 </head>
 <body>
 <div id="root"></div>
-<script type="text/babel">
-  const { useState, useRef, useCallback, useEffect } = React;
+<script type="text/plain" id="app-src">
+  const { useState, useRef, useCallback, useEffect, useMemo } = React;
 
   // Storage
   function useStorage(key, fallback) {
@@ -36,8 +35,10 @@
       try { const s = localStorage.getItem(key); return s ? JSON.parse(s) : fallback; }
       catch { return fallback; }
     });
+    const latest = useRef(value);
     const set = (v) => {
-      const next = typeof v === "function" ? v(value) : v;
+      const next = typeof v === "function" ? v(latest.current) : v;
+      latest.current = next;
       setValue(next);
       try { localStorage.setItem(key, JSON.stringify(next)); } catch {}
     };
@@ -45,7 +46,10 @@
   }
 
   // Constants
-  const DEFAULT_GOALS = { calories:1600, protein:130, carbs:150, fat:50, tdee:2100 };
+  const DEFAULT_GOALS = { calories:1600, protein:130, carbs:150, fat:50, tdee:2100, strengthMin:60, cardioMin:150, countWorkouts:true };
+  // Which workout types count toward each weekly target (matches the Summary tab in the sheet)
+  const STRENGTH_TYPES = ["Strength"];
+  const CARDIO_TYPES = ["Cardio","Sports"];
   const MEALS = ["Breakfast","Lunch","Dinner","Snacks"];
   const MEAL_ICONS = { Breakfast:"🌅", Lunch:"☀️", Dinner:"🌙", Snacks:"🍎" };
   const WORKOUT_TYPES = ["Strength","Cardio","HIIT","Yoga","Tai Chi","Sports","Other"];
@@ -53,6 +57,67 @@
 
   function todayKey() { const d=new Date(); return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
   function fmtDate(k) { return new Date(k+"T12:00:00").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric"}); }
+  function dateKey(d) { return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0"); }
+  function daysAgoKey(n) { const d=new Date(); d.setDate(d.getDate()-n); return dateKey(d); }
+  function relDate(k) { return k===todayKey()?"Today":k===daysAgoKey(1)?"Yesterday":fmtDate(k); }
+  const uid = () => Date.now()+Math.random();
+  const byDateDesc = (a,b) => b.date.localeCompare(a.date);
+  const foodKey = name => (name||"").trim().toLowerCase().replace(/\s+/g," ");
+  const median = arr => { if(!arr.length) return 0; const a=[...arr].sort((x,y)=>x-y); const m=Math.floor(a.length/2); return a.length%2?a[m]:(a[m-1]+a[m])/2; };
+  const mostCommon = arr => { const c={}; let best=arr[0], n=0; arr.forEach(v=>{c[v]=(c[v]||0)+1; if(c[v]>n){n=c[v];best=v;}}); return best; };
+
+  // Every distinct food ever logged, with its most recent numbers and how often it was logged
+  function buildFoodStats(foodLogs) {
+    const stats={};
+    Object.keys(foodLogs).sort().forEach(date=>{
+      MEALS.forEach(meal=>((foodLogs[date]||{})[meal]||[]).forEach(f=>{
+        const k=foodKey(f.name); if(!k) return;
+        const st=stats[k]||(stats[k]={key:k,count:0,meals:{}});
+        st.name=f.name; st.calories=f.calories; st.protein=f.protein; st.carbs=f.carbs; st.fat=f.fat;
+        st.count++; st.lastDate=date; st.meals[meal]=(st.meals[meal]||0)+1;
+      }));
+    });
+    return stats;
+  }
+
+  // The workouts logged most often, with their usual type and duration
+  function buildWorkoutPresets(workouts, max=6) {
+    const recent=daysAgoKey(120), groups={};
+    [...workouts].sort((a,b)=>a.date.localeCompare(b.date)).forEach(w=>{
+      const k=foodKey(w.name); if(!k) return;
+      const g=groups[k]||(groups[k]={key:k,all:[],recent:0});
+      g.name=w.name; g.all.push(w); if(w.date>=recent) g.recent++;
+    });
+    return Object.values(groups).filter(g=>g.all.length>=2)
+      .sort((a,b)=>(b.recent-a.recent)||(b.all.length-a.all.length)).slice(0,max)
+      .map(g=>{
+        const last=g.all.slice(-5);
+        const durs=last.map(w=>+w.duration||0).filter(Boolean), cals=last.map(w=>+w.calories||0).filter(Boolean);
+        return {key:g.key,name:g.name,count:g.all.length,type:mostCommon(g.all.map(w=>w.type)),muscleGroup:mostCommon(g.all.map(w=>w.muscleGroup)),
+          duration:durs.length?Math.round(median(durs)):"",calories:cals.length?Math.round(median(cals)):""};
+      });
+  }
+
+  // Phone photos are several MB; the AI reads a 1280px copy just as well and far faster
+  function shrinkImage(file, maxDim=1280, quality=0.82) {
+    return new Promise((resolve,reject)=>{
+      const url=URL.createObjectURL(file), img=new Image();
+      img.onload=()=>{
+        try {
+          const scale=Math.min(1,maxDim/Math.max(img.naturalWidth,img.naturalHeight));
+          const w=Math.max(1,Math.round(img.naturalWidth*scale)), h=Math.max(1,Math.round(img.naturalHeight*scale));
+          const c=document.createElement("canvas"); c.width=w; c.height=h;
+          c.getContext("2d").drawImage(img,0,0,w,h);
+          const dataUrl=c.toDataURL("image/jpeg",quality);
+          URL.revokeObjectURL(url);
+          if(!dataUrl.startsWith("data:image/jpeg")) return reject(new Error("encode failed"));
+          resolve({base64:dataUrl.split(",")[1],mediaType:"image/jpeg",preview:dataUrl});
+        } catch(e) { URL.revokeObjectURL(url); reject(e); }
+      };
+      img.onerror=()=>{ URL.revokeObjectURL(url); reject(new Error("could not read image")); };
+      img.src=url;
+    });
+  }
 
   // Claude API call via Netlify proxy
   async function callClaude(input, apiKey) {
@@ -144,11 +209,14 @@
 
   async function syncToSheets(url, token, data, force=false) {
     // text/plain avoids a CORS preflight, which Apps Script doesn't answer
-    const res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "text/plain;charset=utf-8" },
-      body: JSON.stringify({ token, force, ...data }),
-    });
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        body: JSON.stringify({ token, force, ...data }),
+      });
+    } catch(e) { const err = new Error("no connection"); err.offline = true; throw err; }
     let out;
     try { out = await res.json(); } catch(e) { throw new Error("Bad response (status "+res.status+") — check the web app URL and access setting"); }
     if (!out.ok) throw new Error(out.error || "Sync failed");
@@ -337,24 +405,65 @@
     );
   }
 
-  // AI Food Modal — handles both add and edit
-  function AIFoodModal({meal, date, onAdd, onClose, apiKey, editItem}) {
+  // Food modal — add or edit a food: AI (describe / photo), saved foods and past meals, or typed numbers
+  function FoodModal({meal, date, onAdd, onQuickAdd, onCopyMeal, onClose, apiKey, editItem, foodLogs, favs, onToggleFav}) {
     const isEdit = !!editItem;
-    const [mode,setMode]=useState("text");
+    const num = v => String(+(+v||0).toFixed(1));
+    const [mode,setMode]=useState(isEdit?"manual":"text");
     const [text,setText]=useState(isEdit?editItem.name:"");
     const [imageData,setImageData]=useState(null);
     const [loading,setLoading]=useState(false);
     const [result,setResult]=useState(null);
     const [error,setError]=useState(null);
     const [hints,setHints]=useState("");
+    const [manual,setManual]=useState(isEdit
+      ?{name:editItem.name,calories:num(editItem.calories),protein:num(editItem.protein),carbs:num(editItem.carbs),fat:num(editItem.fat)}
+      :{name:"",calories:"",protein:"",carbs:"",fat:""});
+    const [savedView,setSavedView]=useState("foods");
+    const [query,setQuery]=useState("");
+    const [sameMealOnly,setSameMealOnly]=useState(false);
+    const [added,setAdded]=useState({});
     const fileRef=useRef();
     const TODAY=todayKey();
 
-    const handleImg=(e)=>{
+    // Snapshots taken when the sheet opens, so the lists don't reorder while you tap through them
+    const [stats]=useState(()=>isEdit?{}:buildFoodStats(foodLogs||{}));
+    const [recentMeals]=useState(()=>{
+      if(isEdit) return [];
+      const out=[];
+      Object.keys(foodLogs||{}).sort().reverse().forEach(d=>{
+        MEALS.forEach(m=>{
+          const items=(foodLogs[d]||{})[m]||[];
+          if(!items.length||(d===date&&m===meal)) return;
+          out.push({date:d,meal:m,items,calories:items.reduce((s,f)=>s+f.calories,0)});
+        });
+      });
+      return out;
+    });
+
+    const savedFoods=useMemo(()=>{
+      const all={...stats};
+      Object.entries(favs||{}).forEach(([k,f])=>{ if(!all[k]) all[k]={key:k,count:0,meals:{},lastDate:"",...f}; });
+      const terms=foodKey(query).split(" ").filter(Boolean);
+      const isFav=f=>(favs||{})[f.key]?1:0;
+      const inMeal=f=>f.meals[meal]||0;
+      // Starred first, then foods you've logged for this meal (most often first), then everything else
+      return Object.values(all)
+        .filter(f=>terms.every(t=>f.key.includes(t)))
+        .sort((a,b)=>(isFav(b)-isFav(a))||(inMeal(b)-inMeal(a))||(b.count-a.count)||(b.lastDate||"").localeCompare(a.lastDate||"")||a.key.localeCompare(b.key))
+        .slice(0,40);
+    },[stats,favs,query,meal]);
+
+    const handleImg=async(e)=>{
       const file=e.target.files[0]; if(!file) return;
-      const r=new FileReader();
-      r.onload=()=>{setImageData({base64:r.result.split(",")[1],mediaType:file.type,preview:r.result});setResult(null);setError(null);};
-      r.readAsDataURL(file);
+      setResult(null);setError(null);
+      try { setImageData(await shrinkImage(file)); }
+      catch {
+        // Couldn't resize (unusual format) — send the original instead
+        const r=new FileReader();
+        r.onload=()=>setImageData({base64:r.result.split(",")[1],mediaType:file.type||"image/jpeg",preview:r.result});
+        r.readAsDataURL(file);
+      }
     };
 
     const analyze=async()=>{
@@ -369,29 +478,47 @@
     };
 
     const canAnalyze=mode==="text"?text.trim().length>2:!!imageData;
+    const canSaveManual=manual.name.trim().length>0&&manual.calories!==""&&!isNaN(+manual.calories);
+    const saveManual=()=>{
+      if(!canSaveManual) return;
+      onAdd(date,meal,{name:manual.name.trim(),calories:+manual.calories||0,protein:+manual.protein||0,carbs:+manual.carbs||0,fat:+manual.fat||0},isEdit?editItem.id:null);
+    };
+    const quickAdd=f=>{
+      onQuickAdd({name:f.name,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat});
+      setAdded(a=>({...a,[f.key]:(a[f.key]||0)+1}));
+    };
+    const addedCount=Object.values(added).reduce((s,n)=>s+n,0);
     const displayDate=date===TODAY?"Today":fmtDate(date);
+    const modes=isEdit
+      ?[["manual","✏️ Numbers"],["text","✍️ Describe"],["photo","📷 Photo"]]
+      :[["text","✍️ Describe"],["photo","📷 Photo"],["saved","⭐ Saved"],["manual","✏️ Manual"]];
+    const mealsShown=recentMeals.filter(r=>!sameMealOnly||r.meal===meal).slice(0,30);
+    const chip=on=>({padding:"6px 12px",borderRadius:18,border:"1px solid",cursor:"pointer",fontSize:12,fontWeight:700,
+      background:on?"rgba(52,210,123,0.15)":"transparent",borderColor:on?"#34D27B":"rgba(255,255,255,0.12)",color:on?"#34D27B":"rgba(255,255,255,0.4)"});
 
     return (
       <div style={S.mdl} onClick={onClose}>
         <div className="modal-sheet" style={S.mdlC} onClick={e=>e.stopPropagation()}>
-          <MHdr title={isEdit?"Edit and Recalculate":"AI Food Analysis"} sub={MEAL_ICONS[meal]+" "+meal+" · "+displayDate} onClose={onClose} />
+          <MHdr title={isEdit?"Edit Food":"Add Food"} sub={MEAL_ICONS[meal]+" "+meal+" · "+displayDate} onClose={onClose} />
 
           <div style={{display:"flex",background:"rgba(255,255,255,0.05)",borderRadius:12,padding:4,marginBottom:18}}>
-            {[["text","✍️ Describe"],["photo","📷 Photo"]].map(([id,lbl])=>(
+            {modes.map(([id,lbl])=>(
               <button key={id} onClick={()=>{setMode(id);setResult(null);setError(null);}}
-                style={{flex:1,padding:"9px",borderRadius:9,border:"none",cursor:"pointer",fontWeight:700,fontSize:13,
+                style={{flex:1,padding:"9px 2px",borderRadius:9,border:"none",cursor:"pointer",fontWeight:700,fontSize:12,whiteSpace:"nowrap",
                   background:mode===id?"rgba(52,210,123,0.2)":"transparent",color:mode===id?"#34D27B":"rgba(255,255,255,0.35)"}}>{lbl}</button>
             ))}
           </div>
 
-          {mode==="text"?(
+          {mode==="text"&&(
             <div style={{marginBottom:14}}>
-              <label style={S.lbl}>{isEdit?"Edit description or re-describe":"Describe your food"}</label>
+              <label style={S.lbl}>{isEdit?"Re-describe to recalculate with AI":"Describe your food"}</label>
               <textarea style={{...S.inp,minHeight:90,resize:"vertical",fontFamily:"inherit",lineHeight:1.5}}
                 placeholder={"e.g. \"2 scrambled eggs with toast\"\nor \"large Chipotle burrito bowl\""}
                 value={text} onChange={e=>{setText(e.target.value);setResult(null);}} />
             </div>
-          ):(
+          )}
+
+          {mode==="photo"&&(
             <div style={{marginBottom:14}}>
               <input ref={fileRef} type="file" accept="image/*" style={{display:"none"}} onChange={handleImg} />
               {!imageData?(
@@ -408,17 +535,15 @@
                     style={{position:"absolute",top:8,right:8,background:"rgba(0,0,0,0.65)",border:"none",borderRadius:"50%",width:30,height:30,color:"#fff",cursor:"pointer",fontSize:18,display:"flex",alignItems:"center",justifyContent:"center"}}>×</button>
                 </div>
               )}
-            {mode==="photo"&&(
               <div style={{marginTop:10}}>
                 <label style={S.lbl}>Hints <span style={{color:"rgba(255,255,255,0.3)",fontWeight:400}}>(optional)</span></label>
                 <input style={{...S.inp,fontSize:14}} placeholder="e.g. 150g, homemade, no oil, large portion"
                   value={hints} onChange={e=>{setHints(e.target.value);setResult(null);}} />
               </div>
-            )}
             </div>
           )}
 
-          {!result&&(
+          {(mode==="text"||mode==="photo")&&!result&&(
             <button onClick={analyze} disabled={!canAnalyze||loading}
               style={{...S.btn("primary"),opacity:canAnalyze&&!loading?1:0.4,marginBottom:14,display:"flex",alignItems:"center",justifyContent:"center",gap:8}}>
               {loading?<><Spinner />&nbsp;Analyzing…</>:"✨ Analyze with AI"}
@@ -427,7 +552,7 @@
 
           {error&&<div style={{background:"rgba(248,113,113,0.1)",border:"1px solid rgba(248,113,113,0.3)",borderRadius:12,padding:"12px 14px",fontSize:13,color:"#F87171",marginBottom:14}}>{error}</div>}
 
-          {result&&(
+          {(mode==="text"||mode==="photo")&&result&&(
             <div style={{background:"rgba(52,210,123,0.06)",border:"1px solid rgba(52,210,123,0.2)",borderRadius:16,padding:16,marginBottom:14}}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:12}}>
                 <div style={{fontSize:16,fontWeight:800,flex:1,marginRight:8}}>{result.name}</div>
@@ -451,6 +576,86 @@
                 <button onClick={()=>onAdd(date,meal,{name:result.name,calories:result.calories,protein:result.protein,carbs:result.carbs,fat:result.fat},isEdit?editItem.id:null)}
                   style={S.btn("primary")}>{isEdit?"Save Changes":"Add to "+meal}</button>
               </div>
+              <button onClick={()=>{setManual({name:result.name,calories:num(result.calories),protein:num(result.protein),carbs:num(result.carbs),fat:num(result.fat)});setResult(null);setMode("manual");}}
+                style={{background:"none",border:"none",color:"#60A5FA",fontSize:13,fontWeight:700,cursor:"pointer",padding:"12px 0 0",width:"100%"}}>
+                ✏️ Adjust the numbers first
+              </button>
+            </div>
+          )}
+
+          {mode==="manual"&&(
+            <div>
+              <div style={{marginBottom:12}}>
+                <label style={S.lbl}>Food</label>
+                <input style={S.inp} placeholder="e.g. 170g plain skyr" value={manual.name}
+                  onChange={e=>setManual(p=>({...p,name:e.target.value}))} />
+              </div>
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
+                {[["calories","Calories","#34D27B"],["protein","Protein (g)","#F87171"],["carbs","Carbs (g)","#60A5FA"],["fat","Fat (g)","#FBBF24"]].map(([k,lbl,c])=>(
+                  <div key={k}>
+                    <label style={{...S.lbl,color:c}}>{lbl}</label>
+                    <input style={{...S.inp,borderColor:c+"30"}} type="number" inputMode="decimal" min="0" placeholder="0"
+                      value={manual[k]} onChange={e=>setManual(p=>({...p,[k]:e.target.value}))} />
+                  </div>
+                ))}
+              </div>
+              <button onClick={saveManual} style={{...S.btn("primary"),opacity:canSaveManual?1:0.4}}>{isEdit?"Save Changes":"Add to "+meal}</button>
+            </div>
+          )}
+
+          {mode==="saved"&&(
+            <div>
+              <div style={{display:"flex",gap:6,marginBottom:12}}>
+                <button onClick={()=>setSavedView("foods")} style={chip(savedView==="foods")}>Foods</button>
+                <button onClick={()=>setSavedView("meals")} style={chip(savedView==="meals")}>Copy a meal</button>
+              </div>
+
+              {savedView==="foods"&&<>
+                <input style={{...S.inp,fontSize:14,marginBottom:6}} placeholder="Search foods you've logged" value={query} onChange={e=>setQuery(e.target.value)} />
+                {savedFoods.length===0&&<div style={{fontSize:13,color:"rgba(255,255,255,0.3)",padding:"18px 0",textAlign:"center"}}>{query?"No logged food matches that":"Foods you log will show up here"}</div>}
+                {savedFoods.map(f=>{
+                  const fav=!!(favs||{})[f.key];
+                  return (
+                    <div key={f.key} style={{display:"flex",alignItems:"center",gap:4,padding:"9px 0",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+                      <button onClick={()=>onToggleFav(f)} aria-label={fav?"Remove favorite":"Add favorite"}
+                        style={{background:"none",border:"none",cursor:"pointer",fontSize:18,padding:"4px 6px 4px 0",color:fav?"#FBBF24":"rgba(255,255,255,0.2)",lineHeight:1}}>{fav?"★":"☆"}</button>
+                      <div style={{flex:1,minWidth:0}}>
+                        <div style={{fontWeight:600,fontSize:14,lineHeight:1.3,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{f.name}</div>
+                        <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:2}}>
+                          <span style={{color:"#34D27B",fontWeight:700}}>{Math.round(f.calories)} kcal</span> · P:{Math.round(f.protein)}g · C:{Math.round(f.carbs)}g · F:{Math.round(f.fat)}g{f.count>1?" · logged "+f.count+"×":""}
+                        </div>
+                      </div>
+                      <button onClick={()=>quickAdd(f)}
+                        style={{background:added[f.key]?"rgba(52,210,123,0.2)":"rgba(52,210,123,0.1)",border:"1px solid rgba(52,210,123,0.3)",borderRadius:10,color:"#34D27B",fontWeight:800,fontSize:13,padding:"7px 0",width:54,cursor:"pointer",flexShrink:0}}>
+                        {added[f.key]?"✓ "+added[f.key]:"+ Add"}
+                      </button>
+                    </div>
+                  );
+                })}
+              </>}
+
+              {savedView==="meals"&&<>
+                <div style={{display:"flex",gap:6,marginBottom:6}}>
+                  <button onClick={()=>setSameMealOnly(false)} style={{...chip(!sameMealOnly),fontSize:11,padding:"4px 10px"}}>All meals</button>
+                  <button onClick={()=>setSameMealOnly(true)} style={{...chip(sameMealOnly),fontSize:11,padding:"4px 10px"}}>{meal} only</button>
+                </div>
+                {mealsShown.length===0&&<div style={{fontSize:13,color:"rgba(255,255,255,0.3)",padding:"18px 0",textAlign:"center"}}>No earlier meals to copy</div>}
+                {mealsShown.map(r=>(
+                  <div key={r.date+r.meal} style={{display:"flex",alignItems:"center",gap:8,padding:"10px 0",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{fontWeight:700,fontSize:14}}>{MEAL_ICONS[r.meal]} {relDate(r.date)} · {r.meal}</div>
+                      <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:2}}>
+                        <span style={{color:"#34D27B",fontWeight:700}}>{Math.round(r.calories)} kcal</span> · {r.items.length} item{r.items.length>1?"s":""}
+                      </div>
+                      <div style={{fontSize:12,color:"rgba(255,255,255,0.45)",marginTop:3,lineHeight:1.35,display:"-webkit-box",WebkitLineClamp:2,WebkitBoxOrient:"vertical",overflow:"hidden"}}>{r.items.map(f=>f.name).join(" · ")}</div>
+                    </div>
+                    <button onClick={()=>onCopyMeal(r.items)}
+                      style={{background:"rgba(52,210,123,0.1)",border:"1px solid rgba(52,210,123,0.3)",borderRadius:10,color:"#34D27B",fontWeight:800,fontSize:13,padding:"7px 0",width:54,cursor:"pointer",flexShrink:0}}>Copy</button>
+                  </div>
+                ))}
+              </>}
+
+              <button onClick={onClose} style={{...S.btn(addedCount?"primary":"secondary"),marginTop:14}}>{addedCount?"Done · "+addedCount+" added":"Close"}</button>
             </div>
           )}
         </div>
@@ -458,32 +663,63 @@
     );
   }
 
-  // Workout Modal
-  function WorkoutModal({onAdd,onClose}) {
+  // Workout modal — log a new workout (with one-tap presets from your history) or edit an existing one
+  function WorkoutModal({onSave,onClose,editItem,workouts}) {
     const TODAY=todayKey();
-    const [form,setForm]=useState({name:"",type:"Strength",muscleGroup:"Full Body",duration:"",notes:"",calories:"",date:TODAY});
-    const [exercises,setExercises]=useState([]);
+    const isEdit=!!editItem;
+    const [form,setForm]=useState(isEdit
+      ?{name:editItem.name||"",type:editItem.type||"Other",muscleGroup:editItem.muscleGroup||"Full Body",duration:editItem.duration?String(editItem.duration):"",notes:editItem.notes||"",calories:editItem.calories?String(editItem.calories):"",date:editItem.date||TODAY}
+      :{name:"",type:"Strength",muscleGroup:"Full Body",duration:"",notes:"",calories:"",date:TODAY});
+    const [exercises,setExercises]=useState(isEdit?(editItem.exercises||[]):[]);
     const [ex,setEx]=useState({name:"",sets:"",reps:"",weight:""});
+    const [presets]=useState(()=>isEdit?[]:buildWorkoutPresets(workouts||[]));
+    const [picked,setPicked]=useState(null);
     const setF=k=>e=>setForm(p=>({...p,[k]:e.target.value}));
     const addEx=()=>{if(ex.name){setExercises(p=>[...p,{...ex}]);setEx({name:"",sets:"",reps:"",weight:""});}};
+    const usePreset=p=>{
+      setPicked(p.key);
+      setForm(f=>({...f,name:p.name,type:p.type,muscleGroup:p.muscleGroup,duration:p.duration===""?"":String(p.duration),calories:p.calories===""?"":String(p.calories)}));
+    };
+    const save=()=>{
+      if(!form.name.trim()) return;
+      const allEx=ex.name?[...exercises,{...ex}]:exercises; // include an exercise typed but not yet added
+      onSave({...form,name:form.name.trim(),duration:+form.duration||0,calories:+form.calories||0,exercises:allEx},isEdit?editItem.id:null);
+    };
+    const types=WORKOUT_TYPES.includes(form.type)?WORKOUT_TYPES:[...WORKOUT_TYPES,form.type];
     return (
       <div style={S.mdl} onClick={onClose}>
         <div className="modal-sheet" style={S.mdlC} onClick={e=>e.stopPropagation()}>
-          <MHdr title="Log Workout" onClose={onClose} />
+          <MHdr title={isEdit?"Edit Workout":"Log Workout"} sub={isEdit?fmtDate(editItem.date):null} onClose={onClose} />
+          {presets.length>0&&(
+            <div style={{marginBottom:16}}>
+              <label style={S.lbl}>Your usual workouts</label>
+              <div style={{display:"flex",flexWrap:"wrap",gap:6}}>
+                {presets.map(p=>(
+                  <button key={p.key} onClick={()=>usePreset(p)}
+                    style={{padding:"8px 12px",borderRadius:12,border:"1px solid",cursor:"pointer",textAlign:"left",
+                      background:picked===p.key?"rgba(52,210,123,0.15)":"rgba(255,255,255,0.04)",
+                      borderColor:picked===p.key?"#34D27B":"rgba(255,255,255,0.1)"}}>
+                    <div style={{fontSize:13,fontWeight:700,color:picked===p.key?"#34D27B":"#fff"}}>{p.name}</div>
+                    <div style={{fontSize:10,color:"rgba(255,255,255,0.4)",marginTop:2}}>{p.type}{p.duration!==""?" · "+p.duration+" min":""}</div>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           <div style={{marginBottom:12}}>
             <label style={S.lbl}>Workout Name</label>
-            <input style={S.inp} placeholder="e.g. Morning Run" value={form.name} onChange={setF("name")} />
+            <input style={S.inp} placeholder="e.g. Morning Run" value={form.name} onChange={e=>{setPicked(null);setF("name")(e);}} />
           </div>
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:12}}>
             <div>
               <label style={S.lbl}>Type</label>
               <select style={{...S.inp,appearance:"none"}} value={form.type} onChange={setF("type")}>
-                {WORKOUT_TYPES.map(t=><option key={t}>{t}</option>)}
+                {types.map(t=><option key={t}>{t}</option>)}
               </select>
             </div>
             <div>
               <label style={S.lbl}>Duration (min)</label>
-              <input style={S.inp} type="number" placeholder="30" value={form.duration} onChange={setF("duration")} />
+              <input style={S.inp} type="number" inputMode="decimal" placeholder="30" value={form.duration} onChange={setF("duration")} />
             </div>
           </div>
           <div style={{marginBottom:12}}>
@@ -502,8 +738,9 @@
             <div style={{marginBottom:12}}>
               <label style={S.lbl}>Exercises</label>
               {exercises.map((e,i)=>(
-                <div key={i} style={{fontSize:12,color:"rgba(255,255,255,0.5)",padding:"3px 0"}}>
-                  {e.name}{e.sets?" · "+e.sets+"×"+e.reps:""}{e.weight?" @ "+e.weight+"lbs":""}
+                <div key={i} style={{display:"flex",justifyContent:"space-between",alignItems:"center",fontSize:12,color:"rgba(255,255,255,0.5)",padding:"3px 0"}}>
+                  <span>{e.name}{e.sets?" · "+e.sets+"×"+e.reps:""}{e.weight?" @ "+e.weight+"lbs":""}</span>
+                  <button onClick={()=>setExercises(p=>p.filter((_,j)=>j!==i))} style={{...S.xBtn,fontSize:18}}>×</button>
                 </div>
               ))}
               <div style={{display:"grid",gridTemplateColumns:"2fr 1fr 1fr 1fr",gap:6,marginTop:8}}>
@@ -518,7 +755,7 @@
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:16}}>
             <div>
               <label style={S.lbl}>Calories Burned</label>
-              <input style={S.inp} type="number" placeholder="~300" value={form.calories} onChange={setF("calories")} />
+              <input style={S.inp} type="number" inputMode="decimal" placeholder="~300" value={form.calories} onChange={setF("calories")} />
             </div>
             <div>
               <label style={S.lbl}>Notes</label>
@@ -529,8 +766,7 @@
             <label style={S.lbl}>Date</label>
             <input style={{...S.inp,colorScheme:"dark"}} type="date" value={form.date} max={TODAY} onChange={setF("date")} />
           </div>
-          <button onClick={()=>form.name&&onAdd({...form,duration:+form.duration,calories:+form.calories,exercises})}
-            style={{...S.btn("primary"),opacity:form.name?1:0.4}}>Log Workout</button>
+          <button onClick={save} style={{...S.btn("primary"),opacity:form.name.trim()?1:0.4}}>{isEdit?"Save Changes":"Log Workout"}</button>
         </div>
       </div>
     );
@@ -542,10 +778,11 @@
     const set=k=>e=>setG(p=>({...p,[k]:+e.target.value}));
     const deficit=g.tdee-g.calories;
     const lbs=Math.max(0,(deficit*7)/3500).toFixed(2);
+    const countOn=g.countWorkouts!==false;
     return (
       <div style={S.mdl} onClick={onClose}>
         <div className="modal-sheet" style={S.mdlC} onClick={e=>e.stopPropagation()}>
-          <MHdr title="Daily Goals" onClose={onClose} />
+          <MHdr title="Goals" onClose={onClose} />
           <div style={{background:"rgba(52,210,123,0.08)",border:"1px solid rgba(52,210,123,0.2)",borderRadius:14,padding:"14px 16px",marginBottom:18,textAlign:"center"}}>
             <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginBottom:4}}>Projected Weekly Loss</div>
             <div style={{fontSize:28,fontWeight:900,color:"#34D27B"}}>{lbs} lbs</div>
@@ -560,14 +797,150 @@
           <div style={{fontSize:12,color:"rgba(255,255,255,0.3)",marginBottom:18,lineHeight:1.6}}>
             💡 500 kcal/day deficit ≈ 1 lb/week. Max recommended: 1,000 kcal/day (2 lbs/week).
           </div>
+
+          <div style={{...S.secT,marginBottom:12,marginTop:6}}>Weekly exercise targets</div>
+          <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:8}}>
+            <div>
+              <label style={{...S.lbl,color:"#34D27B"}}>Strength (min)</label>
+              <input style={{...S.inp,borderColor:"#34D27B30"}} type="number" inputMode="numeric" value={g.strengthMin} onChange={set("strengthMin")} />
+            </div>
+            <div>
+              <label style={{...S.lbl,color:"#60A5FA"}}>Cardio + sports (min)</label>
+              <input style={{...S.inp,borderColor:"#60A5FA30"}} type="number" inputMode="numeric" value={g.cardioMin} onChange={set("cardioMin")} />
+            </div>
+          </div>
+          <div style={{fontSize:12,color:"rgba(255,255,255,0.3)",marginBottom:18,lineHeight:1.6}}>
+            Counted over the last 7 days including today. Set a target to 0 to hide its bar.
+          </div>
+
+          <div onClick={()=>setG(p=>({...p,countWorkouts:!countOn}))}
+            style={{display:"flex",alignItems:"center",gap:12,padding:"12px 14px",borderRadius:12,border:"1px solid rgba(255,255,255,0.1)",background:"rgba(255,255,255,0.04)",cursor:"pointer",marginBottom:18}}>
+            <div style={{width:42,height:24,borderRadius:12,background:countOn?"#34D27B":"rgba(255,255,255,0.15)",position:"relative",flexShrink:0,transition:"background 0.2s"}}>
+              <div style={{position:"absolute",top:2,left:countOn?20:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"left 0.2s"}} />
+            </div>
+            <div>
+              <div style={{fontSize:14,fontWeight:700}}>Add workout calories to today's deficit</div>
+              <div style={{fontSize:11,color:"rgba(255,255,255,0.35)",marginTop:2,lineHeight:1.4}}>Turn off if your TDEE number already includes exercise</div>
+            </div>
+          </div>
+
           <button onClick={()=>onSave(g)} style={S.btn("primary")}>Save Goals</button>
         </div>
       </div>
     );
   }
 
+  // Dashboard card: strength and cardio minutes over the last 7 days against the weekly targets
+  function ExerciseTargets({workouts,goals,onOpen}) {
+    const from=daysAgoKey(6), to=todayKey();
+    const week=workouts.filter(w=>w.date>=from&&w.date<=to);
+    const mins=test=>Math.round(week.filter(w=>test(w.type)).reduce((s,w)=>s+(+w.duration||0),0));
+    const strength=mins(t=>STRENGTH_TYPES.includes(t));
+    const cardio=mins(t=>CARDIO_TYPES.includes(t));
+    const other=mins(t=>!STRENGTH_TYPES.includes(t)&&!CARDIO_TYPES.includes(t));
+    const rows=[["Strength",strength,+goals.strengthMin||0,"#34D27B"],["Cardio + sports",cardio,+goals.cardioMin||0,"#60A5FA"]];
+    return (
+      <div style={{...S.card,cursor:"pointer"}} onClick={onOpen}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:12}}>
+          <div style={{fontSize:13,fontWeight:700}}>Exercise</div>
+          <div style={{fontSize:11,color:"rgba(255,255,255,0.35)"}}>last 7 days, incl. today</div>
+        </div>
+        {rows.map(([lbl,done,goal,color])=>{
+          const left=Math.max(goal-done,0);
+          return (
+            <div key={lbl} style={{marginBottom:10}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5,alignItems:"baseline"}}>
+                <span style={{color,fontSize:12,fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>{lbl}</span>
+                <span style={{fontSize:12,color:"rgba(255,255,255,0.45)"}}>
+                  {goal>0
+                    ? <>{done} / {goal} min · <span style={{fontWeight:700,color:left?"rgba(255,255,255,0.8)":color}}>{left?left+" to go":"✓ done"}</span></>
+                    : done+" min"}
+                </span>
+              </div>
+              {goal>0&&(
+                <div style={{height:5,borderRadius:3,background:"rgba(255,255,255,0.08)"}}>
+                  <div style={{height:"100%",borderRadius:3,background:color,width:(Math.min(done/goal,1)*100)+"%",transition:"width 0.5s ease"}} />
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {other>0&&<div style={{fontSize:11,color:"rgba(255,255,255,0.3)",marginTop:2}}>Plus {other} min of other activity (tai chi, yoga…)</div>}
+      </div>
+    );
+  }
+
+  // Line chart with a true time axis: gaps between entries show as gaps, not as equal steps
+  const TREND_RANGES=[["3M",92],["6M",183],["1Y",366],["All",0]];
+  function TrendChart({title,points,color,unit,range}) {
+    const days=(TREND_RANGES.find(r=>r[0]===range)||[])[1]||0;
+    const from=days?daysAgoKey(days):"";
+    const pts=points.filter(p=>p.value&&p.date>=from).sort((a,b)=>a.date.localeCompare(b.date));
+    if(pts.length<2) return (
+      <div style={{...S.card,marginBottom:14}}>
+        <div style={S.secT}>{title}</div>
+        <div style={{fontSize:13,color:"rgba(255,255,255,0.3)",padding:"10px 0 6px"}}>{pts.length?"Only one entry":"No entries"} in this range. Pick a longer one above.</div>
+      </div>
+    );
+    const DAY=86400000, T=k=>new Date(k+"T12:00:00").getTime();
+    const t0=T(pts[0].date), t1=T(pts[pts.length-1].date), span=Math.max(t1-t0,DAY);
+    const vals=pts.map(p=>p.value), lo=Math.min(...vals), hi=Math.max(...vals);
+    const pad=Math.max((hi-lo)*0.18,unit==="lbs"?1:0.25);
+    const minV=lo-pad, maxV=hi+pad;
+    const W=320,H=140,L=34,R=12,TOP=16,BOT=24;
+    const X=k=>L+((T(k)-t0)/span)*(W-L-R);
+    const Y=v=>TOP+(1-(v-minV)/(maxV-minV))*(H-TOP-BOT);
+    const fmt=v=>String(+v.toFixed(1));
+    // Month ticks along the bottom, thinned so labels don't collide
+    const ticks=[]; const d=new Date(t0); d.setDate(1); d.setHours(12,0,0,0); d.setMonth(d.getMonth()+1);
+    while(d.getTime()<=t1){ ticks.push(new Date(d)); d.setMonth(d.getMonth()+1); }
+    const step=Math.max(1,Math.ceil(ticks.length/6));
+    const shown=ticks.filter((_,i)=>i%step===0);
+    const first=pts[0], last=pts[pts.length-1], change=last.value-first.value;
+    const lx=X(last.date), ly=Y(last.value);
+    const shortDate=k=>new Date(k+"T12:00:00").toLocaleDateString("en-US",{month:"short",day:"numeric",year:new Date(k+"T12:00:00").getFullYear()===new Date().getFullYear()?undefined:"2-digit"});
+    return (
+      <div style={{...S.card,marginBottom:14}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"baseline",marginBottom:6}}>
+          <div style={{...S.secT,marginBottom:0}}>{title}</div>
+          <div style={{fontSize:12,fontWeight:700,color:change<0?"#34D27B":change>0?"#F87171":"rgba(255,255,255,0.4)"}}>
+            {change>0?"+":""}{fmt(change)} {unit}
+            <span style={{fontWeight:400,color:"rgba(255,255,255,0.3)"}}> since {shortDate(first.date)}</span>
+          </div>
+        </div>
+        <svg viewBox={"0 0 "+W+" "+H} width="100%" style={{display:"block",overflow:"visible"}} role="img" aria-label={title}>
+          {[hi,(hi+lo)/2,lo].map((v,i)=>(
+            <g key={i}>
+              <line x1={L} x2={W-R} y1={Y(v)} y2={Y(v)} stroke="rgba(255,255,255,0.07)" strokeWidth="1" />
+              <text x={L-6} y={Y(v)+3} textAnchor="end" fontSize="9" fill="rgba(255,255,255,0.35)">{fmt(v)}</text>
+            </g>
+          ))}
+          {shown.map((m,i)=>{
+            const x=L+((m.getTime()-t0)/span)*(W-L-R);
+            return (
+              <g key={i}>
+                <line x1={x} x2={x} y1={H-BOT} y2={H-BOT+4} stroke="rgba(255,255,255,0.2)" strokeWidth="1" />
+                <text x={x} y={H-6} textAnchor="middle" fontSize="9" fill="rgba(255,255,255,0.35)">
+                  {m.toLocaleDateString("en-US",{month:"short"})}{(i===0?m.getFullYear()!==new Date().getFullYear():m.getFullYear()!==shown[i-1].getFullYear())?" '"+String(m.getFullYear()).slice(2):""}
+                </text>
+              </g>
+            );
+          })}
+          {pts.slice(1).map((p,i)=>{
+            const a=pts[i], gap=(T(p.date)-T(a.date))/DAY>30; // long gaps are drawn faint and dashed
+            return <line key={i} x1={X(a.date)} y1={Y(a.value)} x2={X(p.date)} y2={Y(p.value)} stroke={color} strokeWidth={gap?1.2:2.2}
+              strokeOpacity={gap?0.45:1} strokeDasharray={gap?"3 4":"none"} strokeLinecap="round" />;
+          })}
+          {pts.map((p,i)=><circle key={i} cx={X(p.date)} cy={Y(p.value)} r={pts.length>40?1.6:2.6} fill={color} />)}
+          <circle cx={lx} cy={ly} r="4.5" fill={color} stroke="#111820" strokeWidth="2" />
+          <text x={Math.min(lx+2,W-2)} y={ly<28?ly+16:ly-9} textAnchor="end" fontSize="11" fontWeight="800" fill={color}>{fmt(last.value)}</text>
+        </svg>
+      </div>
+    );
+  }
+
   // Day Diary — reusable for any date
-  function DayDiary({dateKey, foodLogs, goals, apiKey, onAddFood, onEditFood, onRemoveFood, onBack}) {
+  function DayDiary({dateKey, foodLogs, goals, apiKey, favs, onToggleFav, onAddFood, onAddFoods, onEditFood, onRemoveFood, onBack}) {
     const TODAY=todayKey();
     const isToday=dateKey===TODAY;
     const dayFoods=foodLogs[dateKey]||{};
@@ -627,7 +1000,7 @@
                   ✨ Add
                 </button>
               </div>
-              {foods.length===0&&<div style={{fontSize:13,color:"rgba(255,255,255,0.18)",padding:"8px 0 0"}}>Tap ✨ Add to log with AI</div>}
+              {foods.length===0&&<div style={{fontSize:13,color:"rgba(255,255,255,0.18)",padding:"8px 0 0"}}>Tap ✨ Add to log with AI or from your saved foods</div>}
               {foods.map(f=>(
                 <div key={f.id} style={{display:"flex",justifyContent:"space-between",alignItems:"center",padding:"9px 0",borderTop:"1px solid rgba(255,255,255,0.05)"}}>
                   <div style={{flex:1,minWidth:0}}>
@@ -649,12 +1022,14 @@
         })}
 
         {addMeal&&(
-          <AIFoodModal meal={addMeal} date={dateKey} apiKey={apiKey}
+          <FoodModal meal={addMeal} date={dateKey} apiKey={apiKey} foodLogs={foodLogs} favs={favs} onToggleFav={onToggleFav}
             onAdd={(d,m,food)=>{onAddFood(d,m,food);setAddMeal(null);}}
+            onQuickAdd={food=>onAddFood(dateKey,addMeal,food)}
+            onCopyMeal={items=>{onAddFoods(dateKey,addMeal,items,true);setAddMeal(null);}}
             onClose={()=>setAddMeal(null)} />
         )}
         {editModal&&(
-          <AIFoodModal meal={editModal.meal} date={dateKey} apiKey={apiKey}
+          <FoodModal meal={editModal.meal} date={dateKey} apiKey={apiKey}
             editItem={editModal.item}
             onAdd={(d,m,food,oldId)=>{onEditFood(d,m,food,oldId);setEditModal(null);}}
             onClose={()=>setEditModal(null)} />
@@ -669,7 +1044,12 @@
     const [tab,setTab]=useState("dashboard");
     const [foodLogs,setFoodLogs]=useStorage("ft_food_logs_v3",{});
     const [workouts,setWorkouts]=useStorage("ft_workouts_v3",[]);
-    const [goals,setGoals]=useStorage("ft_goals_v3",DEFAULT_GOALS);
+    const [storedGoals,setGoals]=useStorage("ft_goals_v3",DEFAULT_GOALS);
+    const goals={...DEFAULT_GOALS,...storedGoals}; // older saved goals lack the newer fields
+    const [favs,setFavs]=useStorage("ft_fav_foods_v1",{}); // starred foods, kept even if their log entries are deleted
+    const [editWorkout,setEditWorkout]=useState(null);
+    const [editMeasure,setEditMeasure]=useState(null);
+    const [trendRange,setTrendRange]=useState("6M");
     const [measurements,setMeasurements]=useStorage("ft_measurements_v1",[]);
     const [showMeasureModal,setShowMeasureModal]=useState(false);
     const [showWorkoutModal,setShowWorkoutModal]=useState(false);
@@ -687,23 +1067,41 @@
     const foodImportRef=useRef();
     const workoutImportRef=useRef();
     const measureImportRef=useRef();
-    const showToast=(msg,ok=true)=>{setImportToast({msg,ok});setTimeout(()=>setImportToast(null),3500);}
+    const toastTimer=useRef();
+    // Pass an undo function to show an Undo button on the toast
+    const showToast=(msg,ok=true,undo=null)=>{
+      clearTimeout(toastTimer.current);
+      setImportToast({msg,ok,undo});
+      toastTimer.current=setTimeout(()=>setImportToast(null),undo?6000:ok?3500:5000);
+    };
 
     // Google Sheets auto-sync
     const [sheetsUrl,setSheetsUrl]=useStorage("ft_sheets_url","");
     const [sheetsToken,setSheetsToken]=useStorage("ft_sheets_token","");
-    const [syncState,setSyncState]=useState(null); // null | "syncing" | "ok" | "error"
+    const [syncState,setSyncState]=useState(null); // null | "syncing" | "ok" | "error" | "waiting" (offline)
     const [syncNonce,setSyncNonce]=useState(0);
+    const lastNonce=useRef(0);
     useEffect(()=>{
       if(!sheetsUrl||!sheetsToken) return;
+      // A tap on the sync button (or coming back online) syncs at once; data changes wait 4s so edits batch up
+      const now=syncNonce!==lastNonce.current; lastNonce.current=syncNonce;
       const t=setTimeout(()=>{
+        if(navigator.onLine===false){ setSyncState("waiting"); return; }
         setSyncState("syncing");
         syncToSheets(sheetsUrl,sheetsToken,buildSheetRows(foodLogs,workouts,measurements))
           .then(()=>setSyncState("ok"))
-          .catch(e=>{ setSyncState("error"); setImportToast({msg:"Sheets sync: "+e.message,ok:false}); setTimeout(()=>setImportToast(null),5000); });
-      }, syncNonce ? 0 : 4000);
+          .catch(e=>{
+            if(e.offline||navigator.onLine===false){ setSyncState("waiting"); return; } // retried when the connection returns
+            setSyncState("error"); showToast("Sheets sync: "+e.message,false);
+          });
+      }, now ? 0 : 4000);
       return ()=>clearTimeout(t);
     },[foodLogs,workouts,measurements,sheetsUrl,sheetsToken,syncNonce]);
+    useEffect(()=>{
+      const retry=()=>setSyncNonce(n=>n+1);
+      window.addEventListener("online",retry);
+      return ()=>window.removeEventListener("online",retry);
+    },[]);
     const connectSheets=()=>{
       const u=prompt("Paste your Apps Script web app URL (ends in /exec)",sheetsUrl||""); if(!u) return;
       const k=prompt("Sync token (same as TOKEN in the script)",sheetsToken||""); if(!k) return;
@@ -728,7 +1126,8 @@
     const todayFoods=foodLogs[TODAY]||{};
     const allTodayFoods=MEALS.flatMap(m=>todayFoods[m]||[]);
     const totals=allTodayFoods.reduce((a,f)=>({calories:a.calories+f.calories,protein:a.protein+f.protein,carbs:a.carbs+f.carbs,fat:a.fat+f.fat}),{calories:0,protein:0,carbs:0,fat:0});
-    const deficit=goals.tdee-totals.calories;
+    const burnedToday=goals.countWorkouts!==false?Math.round(workouts.filter(w=>w.date===TODAY).reduce((s,w)=>s+(+w.calories||0),0)):0;
+    const deficit=Math.round(goals.tdee+burnedToday-totals.calories);
     const remaining=goals.calories-totals.calories;
     const pctOfGoal=Math.min(totals.calories/goals.calories,1);
     const lbsPerWeek=Math.max(0,(deficit*7)/3500).toFixed(2);
@@ -753,17 +1152,55 @@
     const rollingAvg=loggedDays.length>0?Math.round(loggedDays.reduce((s,d)=>s+d.cals,0)/loggedDays.length):null;
 
     // Mutations for any date
-    const addFood=(date,meal,food)=>{
-      setFoodLogs(prev=>({...prev,[date]:{...(prev[date]||{}),[meal]:[...((prev[date]||{})[meal]||[]),{...food,id:Date.now()}]}}));
+    const mealList=(logs,date,meal)=>((logs[date]||{})[meal]||[]);
+    const setMeal=(date,meal,fn)=>setFoodLogs(prev=>({...prev,[date]:{...(prev[date]||{}),[meal]:fn(mealList(prev,date,meal))}}));
+    const short=(t,n=26)=>t.length>n?t.slice(0,n-1)+"…":t;
+    const addFoods=(date,meal,foods,announce)=>{
+      const items=foods.map(f=>({name:f.name,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat,id:uid()}));
+      setMeal(date,meal,list=>[...list,...items]);
+      if(announce){
+        const ids=new Set(items.map(f=>f.id));
+        showToast("Copied "+items.length+" item"+(items.length>1?"s":"")+" to "+meal,true,()=>setMeal(date,meal,list=>list.filter(f=>!ids.has(f.id))));
+      }
     };
-    const editFood=(date,meal,food,oldId)=>{
-      setFoodLogs(prev=>({...prev,[date]:{...(prev[date]||{}),[meal]:((prev[date]||{})[meal]||[]).map(f=>f.id===oldId?{...food,id:oldId}:f)}}));
-    };
+    const addFood=(date,meal,food)=>addFoods(date,meal,[food]);
+    const editFood=(date,meal,food,oldId)=>setMeal(date,meal,list=>list.map(f=>f.id===oldId?{...food,id:oldId}:f));
     const removeFood=(date,meal,id)=>{
-      setFoodLogs(prev=>({...prev,[date]:{...(prev[date]||{}),[meal]:((prev[date]||{})[meal]||[]).filter(f=>f.id!==id)}}));
+      const list=mealList(foodLogs,date,meal), idx=list.findIndex(f=>f.id===id);
+      if(idx<0) return;
+      const item=list[idx];
+      setMeal(date,meal,l=>l.filter(f=>f.id!==id));
+      showToast("Deleted "+short(item.name),true,()=>setMeal(date,meal,l=>{const n=[...l]; n.splice(Math.min(idx,n.length),0,item); return n;}));
+    };
+    const toggleFav=f=>setFavs(prev=>{
+      const next={...prev};
+      if(next[f.key]) delete next[f.key];
+      else next[f.key]={name:f.name,calories:f.calories,protein:f.protein,carbs:f.carbs,fat:f.fat};
+      return next;
+    });
+
+    const closeWorkoutModal=()=>{setShowWorkoutModal(false);setEditWorkout(null);};
+    const saveWorkout=(w,id)=>{
+      if(id!=null) setWorkouts(p=>p.map(x=>x.id===id?{...x,...w,id}:x).sort(byDateDesc));
+      else setWorkouts(p=>[{...w,id:uid()},...p].sort(byDateDesc));
+      closeWorkoutModal();
+    };
+    const removeWorkout=w=>{
+      setWorkouts(p=>p.filter(x=>x.id!==w.id));
+      showToast("Deleted "+short(w.name),true,()=>setWorkouts(p=>[...p,w].sort(byDateDesc)));
+    };
+    const closeMeasureModal=()=>{setShowMeasureModal(false);setEditMeasure(null);};
+    const saveMeasure=(m,id)=>{
+      if(id!=null) setMeasurements(p=>p.map(x=>x.id===id?{...x,...m,id}:x).sort(byDateDesc));
+      else setMeasurements(p=>[{...m,id:uid()},...p].sort(byDateDesc));
+      closeMeasureModal();
+    };
+    const removeMeasure=m=>{
+      setMeasurements(p=>p.filter(x=>x.id!==m.id));
+      showToast("Deleted "+fmtDate(m.date)+" entry",true,()=>setMeasurements(p=>[...p,m].sort(byDateDesc)));
     };
 
-    const pastDays=Object.keys(foodLogs).filter(k=>k!==TODAY).sort((a,b)=>b.localeCompare(a));
+    const pastDays=Object.keys(foodLogs).filter(k=>k!==TODAY&&MEALS.some(m=>mealList(foodLogs,k,m).length)).sort((a,b)=>b.localeCompare(a));
     const inputBarH = tab==="insights" ? "calc(100dvh - 195px)" : "calc(100dvh - 130px)";
     const scroll={padding:"0 14px",paddingBottom:tab==="insights"?"calc(160px + env(safe-area-inset-bottom,0px))":"calc(90px + env(safe-area-inset-bottom,0px))",overflowY:"auto",maxHeight:inputBarH};
 
@@ -793,14 +1230,14 @@
                 title={sheetsUrl?"Synced to Google Sheets — tap to sync now":"Connect Google Sheets"}
                 style={{background:"rgba(52,210,123,0.12)",border:"1px solid "+(syncState==="error"?"rgba(248,113,113,0.4)":"rgba(52,210,123,0.25)"),borderRadius:12,
                   color:syncState==="error"?"#F87171":"#34D27B",fontSize:14,fontWeight:700,cursor:"pointer",padding:"8px 12px",lineHeight:1}}>
-                {!sheetsUrl?"☁ Sheets":syncState==="syncing"?"☁ …":syncState==="error"?"☁ !":"☁ ✓"}
+                {!sheetsUrl?"☁ Sheets":syncState==="syncing"?"☁ …":syncState==="waiting"?"☁ ⏳":syncState==="error"?"☁ !":"☁ ✓"}
               </button>
               <button onClick={()=>setShowGoalsModal(true)} style={{background:"rgba(52,210,123,0.12)",border:"1px solid rgba(52,210,123,0.25)",borderRadius:12,color:"#34D27B",fontSize:18,cursor:"pointer",padding:"8px 10px",lineHeight:1}}>⚙️</button>
             </div>
           </div>
         </div>
 
-        <div style={{...scroll,position:"relative",zIndex:1}}>
+        <div style={{...scroll,position:"relative"}}>
 
           {/* DASHBOARD */}
           {tab==="dashboard"&&<>
@@ -811,7 +1248,8 @@
                   <div style={{fontSize:40,fontWeight:900,letterSpacing:-1.5,color:deficit>=0?"#34D27B":"#F87171",marginTop:4,lineHeight:1}}>
                     {deficit>=0?"−":"+"}{Math.abs(deficit)}
                   </div>
-                  <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:4}}>kcal below TDEE</div>
+                  <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",marginTop:4}}>kcal {deficit>=0?"below":"above"} TDEE</div>
+                  {burnedToday>0&&<div style={{fontSize:11,color:"rgba(255,255,255,0.3)",marginTop:2}}>incl. {burnedToday} burned in workouts</div>}
                 </div>
                 <div style={{textAlign:"right"}}>
                   <div style={{fontSize:12,color:"rgba(255,255,255,0.4)",fontWeight:700,textTransform:"uppercase",letterSpacing:1}}>Est. Loss</div>
@@ -849,6 +1287,8 @@
                 <MacroBar label="Fat"     current={totals.fat}     goal={goals.fat}     color="#FBBF24" />
               </div>
             </div>
+
+            <ExerciseTargets workouts={workouts} goals={goals} onOpen={()=>setTab("workouts")} />
 
             <div style={S.card}>
               <div style={{display:"flex",justifyContent:"space-between",alignItems:"flex-start",marginBottom:14}}>
@@ -918,7 +1358,10 @@
               foodLogs={foodLogs}
               goals={goals}
               apiKey={apiKey}
+              favs={favs}
+              onToggleFav={toggleFav}
               onAddFood={addFood}
+              onAddFoods={addFoods}
               onEditFood={editFood}
               onRemoveFood={removeFood}
               onBack={()=>setDiaryDate(null)}
@@ -1055,26 +1498,20 @@
                     )}
                     <div style={{marginTop:8,fontSize:11,color:"rgba(255,255,255,0.2)"}}>{fmtDate(w.date)}</div>
                   </div>
-                  <button onClick={()=>setWorkouts(p=>p.filter(x=>x.id!==w.id))} style={{...S.xBtn,fontSize:24,marginTop:-4,marginLeft:8}}>×</button>
+                  <div style={{display:"flex",alignItems:"center",gap:6,marginLeft:8}}>
+                    <button onClick={()=>setEditWorkout(w)}
+                      style={{background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.25)",borderRadius:8,color:"#60A5FA",fontSize:11,fontWeight:700,padding:"4px 8px",cursor:"pointer"}}>
+                      Edit
+                    </button>
+                    <button onClick={()=>removeWorkout(w)} style={{...S.xBtn,fontSize:24,marginTop:-4}}>×</button>
+                  </div>
                 </div>
               </div>
             ))}
           </>}
-        </div>
 
-        {/* Import toast */}
-        {importToast&&(
-          <div style={{position:"fixed",bottom:"calc(80px + env(safe-area-inset-bottom,0px))",left:"50%",transform:"translateX(-50%)",
-            background:importToast.ok?"rgba(52,210,123,0.95)":"rgba(248,113,113,0.95)",
-            color:"#fff",fontWeight:700,fontSize:13,padding:"10px 20px",borderRadius:20,
-            whiteSpace:"nowrap",zIndex:200,boxShadow:"0 4px 20px rgba(0,0,0,0.4)"}}>
-            {importToast.ok?"✓ ":""}{importToast.msg}
-          </div>
-        )}
-
-          {/* BODY TAB */}
+          {/* BODY */}
           {tab==="body"&&<>
-            {/* Log button */}
             <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:8,marginBottom:16}}>
               <button onClick={()=>setShowMeasureModal(true)} style={{...S.btn("primary"),padding:"10px 8px",fontSize:13}}>+ Log</button>
               <input ref={measureImportRef} type="file" accept=".csv" style={{display:"none"}}
@@ -1113,71 +1550,43 @@
               );
             })()}
 
-            {/* Weight chart */}
-            {measurements.filter(m=>m.weight).length>1&&(()=>{
-              const pts=[...measurements].filter(m=>m.weight).sort((a,b)=>a.date.localeCompare(b.date)).slice(-10);
-              const vals=pts.map(p=>p.weight);
-              const minV=Math.min(...vals)-2, maxV=Math.max(...vals)+2, range=maxV-minV;
-              return (
-                <div style={{...S.card,marginBottom:14}}>
-                  <div style={S.secT}>Weight Trend</div>
-                  <div style={{position:"relative",height:80,marginBottom:8}}>
-                    <svg width="100%" height="80" style={{overflow:"visible"}}>
-                      <polyline
-                        points={pts.map((p,i)=>`${(i/(pts.length-1))*100}%,${80-((p.weight-minV)/range)*70}`).join(" ")}
-                        fill="none" stroke="#34D27B" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      />
-                      {pts.map((p,i)=>(
-                        <circle key={i} cx={`${(i/(pts.length-1))*100}%`} cy={80-((p.weight-minV)/range)*70}
-                          r="3.5" fill="#34D27B" />
-                      ))}
-                    </svg>
-                  </div>
-                  <div style={{display:"flex",justifyContent:"space-between"}}>
-                    <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{pts[0].date.slice(5)}</span>
-                    <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{pts[pts.length-1].date.slice(5)}</span>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Waist chart */}
-            {measurements.filter(m=>m.waist).length>1&&(()=>{
-              const pts=[...measurements].filter(m=>m.waist).sort((a,b)=>a.date.localeCompare(b.date)).slice(-10);
-              const vals=pts.map(p=>p.waist);
-              const minV=Math.min(...vals)-1, maxV=Math.max(...vals)+1, range=maxV-minV||1;
-              return (
-                <div style={{...S.card,marginBottom:14}}>
-                  <div style={S.secT}>Waist Trend</div>
-                  <div style={{position:"relative",height:80,marginBottom:8}}>
-                    <svg width="100%" height="80" style={{overflow:"visible"}}>
-                      <polyline
-                        points={pts.map((p,i)=>`${(i/(pts.length-1))*100}%,${80-((p.waist-minV)/range)*70}`).join(" ")}
-                        fill="none" stroke="#C084FC" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
-                      />
-                      {pts.map((p,i)=>(
-                        <circle key={i} cx={`${(i/(pts.length-1))*100}%`} cy={80-((p.waist-minV)/range)*70}
-                          r="3.5" fill="#C084FC" />
-                      ))}
-                    </svg>
-                  </div>
-                  <div style={{display:"flex",justifyContent:"space-between"}}>
-                    <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{pts[0].date.slice(5)}</span>
-                    <span style={{fontSize:10,color:"rgba(255,255,255,0.3)"}}>{pts[pts.length-1].date.slice(5)}</span>
-                  </div>
-                </div>
-              );
-            })()}
+            {/* Trend charts */}
+            {measurements.length>1&&(
+              <div style={{display:"flex",gap:6,marginBottom:10,alignItems:"center"}}>
+                <span style={{fontSize:11,color:"rgba(255,255,255,0.35)",textTransform:"uppercase",letterSpacing:1,fontWeight:700,marginRight:4}}>Trends</span>
+                {TREND_RANGES.map(([id])=>(
+                  <button key={id} onClick={()=>setTrendRange(id)}
+                    style={{padding:"5px 12px",borderRadius:18,border:"1px solid",cursor:"pointer",fontSize:12,fontWeight:700,
+                      background:trendRange===id?"rgba(52,210,123,0.15)":"transparent",
+                      borderColor:trendRange===id?"#34D27B":"rgba(255,255,255,0.12)",
+                      color:trendRange===id?"#34D27B":"rgba(255,255,255,0.4)"}}>{id}</button>
+                ))}
+              </div>
+            )}
+            {measurements.filter(m=>m.weight).length>1&&(
+              <TrendChart title="Weight" unit="lbs" color="#34D27B" range={trendRange}
+                points={measurements.filter(m=>m.weight).map(m=>({date:m.date,value:m.weight}))} />
+            )}
+            {measurements.filter(m=>m.waist).length>1&&(
+              <TrendChart title="Waist" unit="in" color="#C084FC" range={trendRange}
+                points={measurements.filter(m=>m.waist).map(m=>({date:m.date,value:m.waist}))} />
+            )}
 
             {/* History log */}
             {measurements.length>0&&(
               <div style={{marginTop:4}}>
                 <div style={{...S.secT,marginBottom:10}}>History</div>
-                {measurements.map((m,i)=>(
+                {measurements.map(m=>(
                   <div key={m.id} style={{...S.card,padding:"14px 16px"}}>
                     <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                       <div style={{fontSize:13,fontWeight:700,color:"rgba(255,255,255,0.7)"}}>{fmtDate(m.date)}</div>
-                      <button onClick={()=>setMeasurements(p=>p.filter(x=>x.id!==m.id))} style={S.xBtn}>×</button>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <button onClick={()=>setEditMeasure(m)}
+                          style={{background:"rgba(96,165,250,0.12)",border:"1px solid rgba(96,165,250,0.25)",borderRadius:8,color:"#60A5FA",fontSize:11,fontWeight:700,padding:"4px 8px",cursor:"pointer"}}>
+                          Edit
+                        </button>
+                        <button onClick={()=>removeMeasure(m)} style={S.xBtn}>×</button>
+                      </div>
                     </div>
                     <div style={{display:"flex",gap:16,marginTop:8}}>
                       {m.weight&&<div><span style={{fontSize:20,fontWeight:800,color:"#34D27B"}}>{m.weight}</span><span style={{fontSize:11,color:"rgba(255,255,255,0.4)",marginLeft:3}}>lbs</span></div>}
@@ -1195,6 +1604,24 @@
               </div>
             )}
           </>}
+        </div>
+
+        {/* Toast (import results, sync errors, and Undo after a delete) */}
+        {importToast&&(
+          <div style={{position:"fixed",bottom:"calc(84px + env(safe-area-inset-bottom,0px))",left:"50%",transform:"translateX(-50%)",
+            background:importToast.undo?"rgba(30,38,48,0.98)":importToast.ok?"rgba(52,210,123,0.95)":"rgba(248,113,113,0.95)",
+            border:importToast.undo?"1px solid rgba(255,255,255,0.15)":"none",
+            color:"#fff",fontWeight:700,fontSize:13,padding:importToast.undo?"8px 8px 8px 16px":"10px 20px",borderRadius:20,
+            width:"max-content",maxWidth:"min(92vw,400px)",zIndex:200,boxShadow:"0 4px 20px rgba(0,0,0,0.4)",display:"flex",alignItems:"center",gap:12}}>
+            <span style={{overflow:"hidden",textOverflow:"ellipsis",whiteSpace:importToast.undo?"nowrap":"normal"}}>{importToast.ok&&!importToast.undo?"✓ ":""}{importToast.msg}</span>
+            {importToast.undo&&(
+              <button onClick={()=>{importToast.undo();clearTimeout(toastTimer.current);setImportToast(null);}}
+                style={{background:"rgba(52,210,123,0.18)",border:"1px solid rgba(52,210,123,0.4)",borderRadius:14,color:"#34D27B",fontWeight:800,fontSize:13,padding:"6px 14px",cursor:"pointer",flexShrink:0}}>
+                Undo
+              </button>
+            )}
+          </div>
+        )}
 
         {/* Bottom nav */}
         <div style={S.nav}>
@@ -1503,10 +1930,8 @@ ${dataContext}`;
             })()}
           </>}
 
-        {showMeasureModal&&<MeasureModal
-          onAdd={m=>{setMeasurements(p=>[{...m,id:Date.now()},...p].sort((a,b)=>b.date.localeCompare(a.date)));setShowMeasureModal(false);}}
-          onClose={()=>setShowMeasureModal(false)} />}
-        {showWorkoutModal&&<WorkoutModal onAdd={w=>{setWorkouts(p=>[{...w,id:Date.now()},...p].sort((a,b)=>b.date.localeCompare(a.date)));setShowWorkoutModal(false);}} onClose={()=>setShowWorkoutModal(false)} />}
+        {(showMeasureModal||editMeasure)&&<MeasureModal editItem={editMeasure} onSave={saveMeasure} onClose={closeMeasureModal} />}
+        {(showWorkoutModal||editWorkout)&&<WorkoutModal workouts={workouts} editItem={editWorkout} onSave={saveWorkout} onClose={closeWorkoutModal} />}
         {showGoalsModal&&<GoalsModal goals={goals} onSave={g=>{setGoals(g);setShowGoalsModal(false);}} onClose={()=>setShowGoalsModal(false)} />}
       </div>
     );
@@ -1514,15 +1939,18 @@ ${dataContext}`;
 
 
   // Measurement Modal
-  function MeasureModal({onAdd, onClose}) {
+  function MeasureModal({onSave, onClose, editItem}) {
     const TODAY=todayKey();
-    const [form,setForm]=useState({date:TODAY,weight:"",waist:"",notes:""});
+    const isEdit=!!editItem;
+    const [form,setForm]=useState(isEdit
+      ?{date:editItem.date,weight:editItem.weight?String(editItem.weight):"",waist:editItem.waist?String(editItem.waist):"",notes:editItem.notes||""}
+      :{date:TODAY,weight:"",waist:"",notes:""});
     const setF=k=>e=>setForm(p=>({...p,[k]:e.target.value}));
     const canSave=form.weight||form.waist;
     return (
       <div style={S.mdl} onClick={onClose}>
         <div className="modal-sheet" style={S.mdlC} onClick={e=>e.stopPropagation()}>
-          <MHdr title="Log Measurement" onClose={onClose} />
+          <MHdr title={isEdit?"Edit Measurement":"Log Measurement"} onClose={onClose} />
           <div style={{marginBottom:14}}>
             <label style={S.lbl}>Date</label>
             <input style={{...S.inp,colorScheme:"dark"}} type="date" value={form.date} max={TODAY} onChange={setF("date")} />
@@ -1530,12 +1958,12 @@ ${dataContext}`;
           <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:10,marginBottom:14}}>
             <div>
               <label style={{...S.lbl,color:"#34D27B"}}>Weight (lbs)</label>
-              <input style={{...S.inp,borderColor:"#34D27B30"}} type="number" step="0.1" placeholder="e.g. 185.5"
+              <input style={{...S.inp,borderColor:"#34D27B30"}} type="number" inputMode="decimal" step="0.1" placeholder="e.g. 185.5"
                 value={form.weight} onChange={setF("weight")} />
             </div>
             <div>
               <label style={{...S.lbl,color:"#C084FC"}}>Waist (inches)</label>
-              <input style={{...S.inp,borderColor:"#C084FC30"}} type="number" step="0.25" placeholder="e.g. 34.5"
+              <input style={{...S.inp,borderColor:"#C084FC30"}} type="number" inputMode="decimal" step="0.25" placeholder="e.g. 34.5"
                 value={form.waist} onChange={setF("waist")} />
             </div>
           </div>
@@ -1543,14 +1971,52 @@ ${dataContext}`;
             <label style={S.lbl}>Notes (optional)</label>
             <input style={S.inp} placeholder="e.g. morning, after workout…" value={form.notes} onChange={setF("notes")} />
           </div>
-          <button onClick={()=>canSave&&onAdd({...form,weight:form.weight?+form.weight:null,waist:form.waist?+form.waist:null})}
-            style={{...S.btn("primary"),opacity:canSave?1:0.4}}>Save Measurement</button>
+          <button onClick={()=>canSave&&onSave({...form,weight:form.weight?+form.weight:null,waist:form.waist?+form.waist:null},isEdit?editItem.id:null)}
+            style={{...S.btn("primary"),opacity:canSave?1:0.4}}>{isEdit?"Save Changes":"Save Measurement"}</button>
         </div>
       </div>
     );
   }
 
   ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+<script>
+// Startup: the app code above is JSX. It is compiled once per version and the result is
+// kept on the device, so later launches skip the compiler entirely.
+(function(){
+  var src=document.getElementById("app-src").textContent;
+  var KEY="ft_compiled_v1";
+  function hash(t){var h=5381;for(var i=0;i<t.length;i++){h=((h<<5)+h+t.charCodeAt(i))|0;}return h+":"+t.length;}
+  function run(code){(0,eval)(code);}
+  function fail(e){
+    document.getElementById("root").innerHTML='<div style="padding:80px 24px;font-family:-apple-system,sans-serif;color:#F87171;line-height:1.5">FuelAI could not start: '+String((e&&e.message)||e).replace(/</g,"&lt;")+'</div>';
+  }
+  function compile(){
+    var el=document.createElement("script");
+    el.src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js";
+    el.crossOrigin="anonymous";
+    el.onload=function(){
+      try{
+        var code=Babel.transform(src,{presets:["react"]}).code;
+        try{localStorage.setItem(KEY,JSON.stringify({h:h,code:code}));}catch(e){}
+        run(code);
+      }catch(e){fail(e);}
+    };
+    el.onerror=function(){fail("could not load the compiler. Check your connection and reopen the app.");};
+    document.head.appendChild(el);
+  }
+  var h=hash(src), cached=null;
+  try{cached=JSON.parse(localStorage.getItem(KEY)||"null");}catch(e){}
+  if(cached&&cached.h===h&&cached.code){
+    try{run(cached.code);}
+    catch(e){try{localStorage.removeItem(KEY);}catch(_){} fail(e);}
+  } else compile();
+
+  // Offline support: sw.js (same folder) keeps a copy of the app on the device.
+  if("serviceWorker" in navigator&&(location.protocol==="https:"||location.hostname==="localhost")){
+    window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});
+  }
+})();
 </script>
 </body>
 </html>
