@@ -773,7 +773,7 @@
   }
 
   // Goals Modal
-  function GoalsModal({goals,onSave,onClose}) {
+  function GoalsModal({goals,onSave,onClose,apiKey,onChangeApiKey}) {
     const [g,setG]=useState(goals);
     const set=k=>e=>setG(p=>({...p,[k]:+e.target.value}));
     const deficit=g.tdee-g.calories;
@@ -825,6 +825,20 @@
           </div>
 
           <button onClick={()=>onSave(g)} style={S.btn("primary")}>Save Goals</button>
+          <div style={{borderTop:"1px solid rgba(255,255,255,0.08)",marginTop:22,paddingTop:18}}>
+            <label style={S.lbl}>Anthropic API Key</label>
+            <div style={{fontSize:12,color:"rgba(255,255,255,0.35)",marginBottom:10}}>
+              {apiKey?"Current key ends in …"+apiKey.slice(-4):"No key saved"}
+            </div>
+            <button onClick={()=>{
+              const k=prompt("Paste your new Anthropic API key (starts with sk-ant-)");
+              if(k===null) return;
+              const t=k.trim();
+              if(!t.startsWith("sk-")){ alert("That doesn't look like an API key — nothing was changed."); return; }
+              onChangeApiKey(t);
+              alert("API key updated. Your logs weren't touched.");
+            }} style={S.btn("secondary")}>Change API Key</button>
+          </div>
         </div>
       </div>
     );
@@ -1932,7 +1946,7 @@ ${dataContext}`;
 
         {(showMeasureModal||editMeasure)&&<MeasureModal editItem={editMeasure} onSave={saveMeasure} onClose={closeMeasureModal} />}
         {(showWorkoutModal||editWorkout)&&<WorkoutModal workouts={workouts} editItem={editWorkout} onSave={saveWorkout} onClose={closeWorkoutModal} />}
-        {showGoalsModal&&<GoalsModal goals={goals} onSave={g=>{setGoals(g);setShowGoalsModal(false);}} onClose={()=>setShowGoalsModal(false)} />}
+        {showGoalsModal&&<GoalsModal goals={goals} onSave={g=>{setGoals(g);setShowGoalsModal(false);}} onClose={()=>setShowGoalsModal(false)} apiKey={apiKey} onChangeApiKey={setApiKey} />}
       </div>
     );
   }
